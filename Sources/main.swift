@@ -230,7 +230,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
 
             const skip = new Set(['Recents', 'View all', 'New session', 'Routines', 'Customize', 'More']);
             const sessionNames = [];
-            for (let i = recentsIdx + 1; i < lines.length && sessionNames.length < 4; i++) {
+            for (let i = recentsIdx + 1; i < lines.length && sessionNames.length < 6; i++) {
                 const line = lines[i];
                 if (skip.has(line) || line.length > 100 || line.length < 2 || line.startsWith('⇧')) continue;
                 if (line.includes('Try the') || line.includes('Install')) break;
