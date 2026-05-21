@@ -1,7 +1,7 @@
 import Cocoa
 import WebKit
 
-class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
+class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     private let webView: WKWebView
     private let outputPath: String
     private let isLogin: Bool
@@ -9,6 +9,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var hasFinishedInitialLoad = false
     private var popupWebView: WKWebView?
     private var captureTimer: Timer?
+    private var windowShown = false
 
     init(output: String, login: Bool) {
         self.outputPath = output
@@ -33,8 +34,9 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
             backing: .buffered,
             defer: false
         )
-        window?.title = "Claude Status — Login"
+        window?.title = "Claude Code"
         window?.contentView = webView
+        window?.delegate = self
 
         if isLogin {
             window?.center()
@@ -45,8 +47,49 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
             window?.orderBack(nil)
         }
 
+        setupSignalHandler()
         webView.load(URLRequest(url: URL(string: "https://claude.ai/code")!))
     }
+
+    func toggleWindow() {
+        guard let window = window, !isLogin else { return }
+        if windowShown {
+            hideWindow()
+        } else {
+            windowShown = true
+            window.setFrame(NSRect(x: 100, y: 200, width: 1200, height: 800), display: true)
+            window.level = .floating
+            NSApp.setActivationPolicy(.regular)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func hideWindow() {
+        guard let window = window else { return }
+        windowShown = false
+        window.level = .normal
+        window.setFrameOrigin(NSPoint(x: 0, y: 0))
+        window.orderBack(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hideWindow()
+        return false
+    }
+
+    private func setupSignalHandler() {
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { [weak self] in
+            self?.toggleWindow()
+        }
+        source.resume()
+        signal(SIGUSR1, SIG_IGN)
+        self.signalSource = source
+    }
+
+    private var signalSource: DispatchSourceSignal?
 
     func webView(
         _ webView: WKWebView,
