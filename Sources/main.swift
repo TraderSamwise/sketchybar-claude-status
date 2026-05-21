@@ -4,16 +4,19 @@ import WebKit
 class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     private let webView: WKWebView
     private let outputPath: String
-    private let isLogin: Bool
+    private let statePath: String
     private var window: NSWindow?
     private var hasFinishedInitialLoad = false
     private var popupWebView: WKWebView?
     private var captureTimer: Timer?
     private var windowShown = false
+    private var signalSource: DispatchSourceSignal?
+    private var signedIn = false
+    private var consecutiveFailures = 0
 
-    init(output: String, login: Bool) {
+    init(output: String) {
         self.outputPath = output
-        self.isLogin = login
+        self.statePath = output.replacingOccurrences(of: ".png", with: ".state")
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -29,7 +32,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
 
     func run() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: isLogin ? 500 : 1200, height: isLogin ? 700 : 800),
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
@@ -37,22 +40,42 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         window?.title = "Claude Code"
         window?.contentView = webView
         window?.delegate = self
+        window?.setFrameOrigin(NSPoint(x: 0, y: 0))
+        window?.orderBack(nil)
 
-        if isLogin {
-            window?.center()
-            window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
-            window?.setFrameOrigin(NSPoint(x: 0, y: 0))
-            window?.orderBack(nil)
-        }
-
+        writeState("loading")
         setupSignalHandler()
         webView.load(URLRequest(url: URL(string: "https://claude.ai/code")!))
     }
 
+    // MARK: - State
+
+    private func writeState(_ state: String) {
+        try? state.write(toFile: statePath, atomically: true, encoding: .utf8)
+    }
+
+    private func enterSignedOut() {
+        signedIn = false
+        captureTimer?.invalidate()
+        captureTimer = nil
+        try? FileManager.default.removeItem(atPath: outputPath)
+        writeState("signed-out")
+    }
+
+    private func enterSignedIn() {
+        signedIn = true
+        consecutiveFailures = 0
+        writeState("ok")
+        if windowShown {
+            hideWindow()
+        }
+        startCaptureLoop()
+    }
+
+    // MARK: - Window toggle
+
     func toggleWindow() {
-        guard let window = window, !isLogin else { return }
+        guard let window = window else { return }
         if windowShown {
             hideWindow()
         } else {
@@ -89,7 +112,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         self.signalSource = source
     }
 
-    private var signalSource: DispatchSourceSignal?
+    // MARK: - OAuth popup support
 
     func webView(
         _ webView: WKWebView,
@@ -113,20 +136,44 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         }
     }
 
-    // MARK: - Initial load polling
+    // MARK: - Navigation
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView == self.webView else { return }
+        guard !hasFinishedInitialLoad else { return }
+        hasFinishedInitialLoad = true
+        pollForSessions()
+    }
+
+    // MARK: - Session polling
 
     private func pollForSessions(attempts: Int = 0) {
         let checkJS = "document.body && document.body.innerText.includes('Recents')"
         webView.evaluateJavaScript(checkJS) { result, _ in
             let found = result as? Bool ?? false
             if found {
-                self.startCaptureLoop()
+                self.enterSignedIn()
             } else if attempts > 30 {
-                fputs("Timed out waiting for page\n", stderr)
-                exit(1)
+                self.enterSignedOut()
+                self.pollWhileSignedOut()
             } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     self.pollForSessions(attempts: attempts + 1)
+                }
+            }
+        }
+    }
+
+    private func pollWhileSignedOut() {
+        guard !signedIn else { return }
+        let checkJS = "document.body && document.body.innerText.includes('Recents')"
+        webView.evaluateJavaScript(checkJS) { result, _ in
+            let found = result as? Bool ?? false
+            if found {
+                self.enterSignedIn()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.pollWhileSignedOut()
                 }
             }
         }
@@ -137,6 +184,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     private var captureCount = 0
 
     private func startCaptureLoop() {
+        captureTimer?.invalidate()
         capture()
         captureTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -153,33 +201,6 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     private func reload() {
         hasFinishedInitialLoad = false
         webView.load(URLRequest(url: URL(string: "https://claude.ai/code")!))
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard !isLogin else { return }
-        guard !hasFinishedInitialLoad else { return }
-        hasFinishedInitialLoad = true
-        if captureCount == 0 {
-            pollForSessions()
-        } else {
-            pollUntilReady()
-        }
-    }
-
-    private func pollUntilReady(attempts: Int = 0) {
-        let checkJS = "document.body && document.body.innerText.includes('Recents')"
-        webView.evaluateJavaScript(checkJS) { result, _ in
-            let found = result as? Bool ?? false
-            if found {
-                self.capture()
-            } else if attempts > 15 {
-                return
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.pollUntilReady(attempts: attempts + 1)
-                }
-            }
-        }
     }
 
     private let captureJS = """
@@ -289,9 +310,16 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
                   let height = info["height"] as? Int,
                   width > 0, height > 0 else {
                 self.isCapturing = false
+                self.consecutiveFailures += 1
+                if self.consecutiveFailures > 20 {
+                    self.enterSignedOut()
+                    self.reload()
+                    self.pollWhileSignedOut()
+                }
                 return
             }
 
+            self.consecutiveFailures = 0
             let snapshotConfig = WKSnapshotConfiguration()
             snapshotConfig.rect = CGRect(x: 0, y: 0, width: width, height: height)
 
@@ -310,14 +338,12 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
 }
 
 let args = CommandLine.arguments
-let login = args.contains("--login")
-
 let outputIndex = args.firstIndex(of: "--output").map { $0 + 1 }
 let outputPath = outputIndex.flatMap { $0 < args.count ? args[$0] : nil } ?? "/tmp/claude-status.png"
 
 let app = NSApplication.shared
-app.setActivationPolicy(login ? .regular : .accessory)
+app.setActivationPolicy(.accessory)
 
-let renderer = StatusRenderer(output: outputPath, login: login)
+let renderer = StatusRenderer(output: outputPath)
 renderer.run()
 app.run()
