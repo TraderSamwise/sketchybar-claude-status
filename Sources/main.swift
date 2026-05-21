@@ -98,8 +98,8 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
         captureTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.captureCount += 1
-            // Reload every ~20 captures (30s) to get fresh session data
-            if self.captureCount % 20 == 0 {
+            // Safety reload every ~10 minutes (400 captures at 1.5s)
+            if self.captureCount % 400 == 0 {
                 self.reload()
             } else {
                 self.capture()
