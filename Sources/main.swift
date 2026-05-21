@@ -82,7 +82,6 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
             windowShown = true
             window.setFrame(NSRect(x: 100, y: 200, width: 1200, height: 800), display: true)
             window.level = .floating
-            NSApp.setActivationPolicy(.regular)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -94,7 +93,6 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         window.level = .normal
         window.setFrameOrigin(NSPoint(x: 0, y: 0))
         window.orderBack(nil)
-        NSApp.setActivationPolicy(.accessory)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
