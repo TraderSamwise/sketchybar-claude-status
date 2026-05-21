@@ -48,13 +48,6 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.load(URLRequest(url: URL(string: "https://claude.ai/code")!))
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard !isLogin else { return }
-        guard !hasFinishedInitialLoad else { return }
-        hasFinishedInitialLoad = true
-        pollForSessions()
-    }
-
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
@@ -98,10 +91,51 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: - Capture loop
 
+    private var captureCount = 0
+
     private func startCaptureLoop() {
         capture()
         captureTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.capture()
+            guard let self = self else { return }
+            self.captureCount += 1
+            // Reload every ~20 captures (30s) to get fresh session data
+            if self.captureCount % 20 == 0 {
+                self.reload()
+            } else {
+                self.capture()
+            }
+        }
+    }
+
+    private func reload() {
+        hasFinishedInitialLoad = false
+        webView.load(URLRequest(url: URL(string: "https://claude.ai/code")!))
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !isLogin else { return }
+        guard !hasFinishedInitialLoad else { return }
+        hasFinishedInitialLoad = true
+        if captureCount == 0 {
+            pollForSessions()
+        } else {
+            pollUntilReady()
+        }
+    }
+
+    private func pollUntilReady(attempts: Int = 0) {
+        let checkJS = "document.body && document.body.innerText.includes('Recents')"
+        webView.evaluateJavaScript(checkJS) { result, _ in
+            let found = result as? Bool ?? false
+            if found {
+                self.capture()
+            } else if attempts > 15 {
+                return
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.pollUntilReady(attempts: attempts + 1)
+                }
+            }
         }
     }
 
@@ -166,7 +200,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate {
 
             overlay = document.createElement('div');
             overlay.id = 'sb-overlay';
-            overlay.style.cssText = 'display:flex;flex-direction:row;align-items:center;gap:4px;padding:2px 6px;background:var(--bg-100, #1a1a1a);position:fixed;top:0;left:0;z-index:999999;white-space:nowrap;';
+            overlay.style.cssText = 'display:flex;flex-direction:row;align-items:center;gap:4px;padding:4px 6px 8px 6px;background:#1a1a1a;position:fixed;top:0;left:0;z-index:999999;white-space:nowrap;';
 
             rowElements.forEach(row => {
                 const clone = row.cloneNode(true);
