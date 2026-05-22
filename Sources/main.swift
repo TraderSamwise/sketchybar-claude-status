@@ -1,6 +1,21 @@
 import Cocoa
 import WebKit
 
+struct AppConfig {
+    var autoFocusOnAsk: Bool = true
+
+    static func load() -> AppConfig {
+        let path = NSString(string: "~/.config/claude-status/config.json").expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return AppConfig()
+        }
+        var config = AppConfig()
+        if let v = json["autoFocusOnAsk"] as? Bool { config.autoFocusOnAsk = v }
+        return config
+    }
+}
+
 class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     private let webView: WKWebView
     private let outputPath: String
@@ -13,10 +28,14 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     private var signalSource: DispatchSourceSignal?
     private var signedIn = false
     private var consecutiveFailures = 0
+    private let config: AppConfig
+    private var alertedSessions: Set<String> = []
+    private var savedFrame: NSRect?
 
-    init(output: String) {
+    init(output: String, config: AppConfig) {
         self.outputPath = output
         self.statePath = output.replacingOccurrences(of: ".png", with: ".state")
+        self.config = config
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -42,6 +61,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         window?.delegate = self
         window?.setFrameOrigin(NSPoint(x: 0, y: 0))
         window?.orderBack(nil)
+        window?.setFrameAutosaveName("ClaudeStatusWindow")
 
         writeState("loading")
         setupSignalHandler()
@@ -80,15 +100,31 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
             hideWindow()
         } else {
             windowShown = true
-            window.setFrame(NSRect(x: 100, y: 200, width: 1200, height: 800), display: true)
+            let frame = savedFrame ?? NSRect(x: 100, y: 200, width: 1200, height: 800)
+            window.setFrame(frame, display: true)
             window.level = .floating
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
+    private func showWindow() {
+        guard let window = window, !windowShown else { return }
+        windowShown = true
+        let frame = savedFrame ?? NSRect(x: 100, y: 200, width: 1200, height: 800)
+        window.setFrame(frame, display: true)
+        window.level = .floating
+        window.orderFrontRegardless()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     private func hideWindow() {
         guard let window = window else { return }
+        savedFrame = window.frame
         windowShown = false
         window.level = .normal
         window.setFrameOrigin(NSPoint(x: 0, y: 0))
@@ -192,6 +228,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
                 self.reload()
             } else {
                 self.capture()
+                self.checkForAwaitingSession()
             }
         }
     }
@@ -292,7 +329,71 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         })()
     """
 
+    private let detectJS = """
+        (function() {
+            var dots = document.querySelectorAll('span.status-dot[data-kind="awaiting"]');
+            var sessions = [];
+            dots.forEach(function(dot) {
+                var row = dot;
+                for (var i = 0; i < 10; i++) {
+                    row = row.parentElement;
+                    if (!row) break;
+                    if (row.tagName === 'BUTTON') break;
+                }
+                if (row && row.tagName === 'BUTTON') {
+                    sessions.push(row.textContent.trim());
+                }
+            });
+            return JSON.stringify(sessions);
+        })()
+    """
+
     private var isCapturing = false
+
+    private func checkForAwaitingSession() {
+        guard config.autoFocusOnAsk, signedIn, !windowShown else { return }
+        webView.evaluateJavaScript(detectJS) { [weak self] result, _ in
+            guard let self = self,
+                  let jsonStr = result as? String,
+                  let data = jsonStr.data(using: .utf8),
+                  let sessions = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+                return
+            }
+
+            if sessions.isEmpty {
+                self.alertedSessions.removeAll()
+                return
+            }
+
+            self.alertedSessions = self.alertedSessions.intersection(Set(sessions))
+
+            guard let target = sessions.first(where: { !self.alertedSessions.contains($0) }) else { return }
+            self.alertedSessions.insert(target)
+
+            let escaped = target.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+            let clickJS = """
+                (function() {
+                    var dots = document.querySelectorAll('span.status-dot[data-kind="awaiting"]');
+                    for (var i = 0; i < dots.length; i++) {
+                        var row = dots[i];
+                        for (var j = 0; j < 10; j++) {
+                            row = row.parentElement;
+                            if (!row) break;
+                            if (row.tagName === 'BUTTON') break;
+                        }
+                        if (row && row.tagName === 'BUTTON' && row.textContent.trim() === '\(escaped)') {
+                            row.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                })()
+            """
+            self.webView.evaluateJavaScript(clickJS) { _, _ in
+                self.showWindow()
+            }
+        }
+    }
 
     private func capture() {
         guard !isCapturing else { return }
@@ -342,6 +443,7 @@ let outputPath = outputIndex.flatMap { $0 < args.count ? args[$0] : nil } ?? "/t
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
-let renderer = StatusRenderer(output: outputPath)
+let config = AppConfig.load()
+let renderer = StatusRenderer(output: outputPath, config: config)
 renderer.run()
 app.run()
