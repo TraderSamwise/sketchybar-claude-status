@@ -122,18 +122,17 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         let frame = savedFrame ?? NSRect(x: 100, y: 200, width: 1200, height: 800)
         window.setFrame(frame, display: true)
         window.level = .floating
-        window.orderFrontRegardless()
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.setActivationPolicy(.regular)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(webView)
     }
 
     private func hideWindow() {
         guard let window = window else { return }
         savedFrame = window.frame
         windowShown = false
+        NSApp.setActivationPolicy(.accessory)
         window.level = .normal
         window.setFrameOrigin(NSPoint(x: 0, y: 0))
         window.orderBack(nil)
