@@ -325,8 +325,8 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
 
             rowElements.forEach(row => {
                 const clone = row.cloneNode(true);
-                // Strip width classes but keep the rest for icon rendering
                 clone.className = clone.className.replace(/\\bw-full\\b/g, '').replace(/\\bshrink-0\\b/g, '');
+                const isIdle = row.querySelector('[aria-label="Idle"]') !== null;
                 clone.style.cssText = `
                     height: auto !important;
                     width: fit-content !important;
@@ -340,6 +340,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
                     max-width: 200px !important;
                     overflow: hidden !important;
                     font-size: 12px !important;
+                    opacity: ${isIdle ? '0.4' : '1'} !important;
                 `;
                 overlay.appendChild(clone);
             });
