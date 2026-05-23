@@ -31,6 +31,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     private let config: AppConfig
     private var alertedSessions: Set<String> = []
     private var savedFrame: NSRect?
+    private var previousApp: NSRunningApplication?
 
     init(output: String, config: AppConfig) {
         self.outputPath = output
@@ -59,9 +60,10 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         window?.title = "Claude Code"
         window?.contentView = webView
         window?.delegate = self
+        window?.setFrameAutosaveName("ClaudeStatusWindow")
+        if let saved = window?.frame { savedFrame = saved }
         window?.setFrameOrigin(NSPoint(x: 0, y: 0))
         window?.orderBack(nil)
-        window?.setFrameAutosaveName("ClaudeStatusWindow")
 
         writeState("loading")
         setupSignalHandler()
@@ -99,6 +101,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         if windowShown {
             hideWindow()
         } else {
+            previousApp = NSWorkspace.shared.frontmostApplication
             windowShown = true
             let frame = savedFrame ?? NSRect(x: 100, y: 200, width: 1200, height: 800)
             window.setFrame(frame, display: true)
@@ -110,6 +113,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
 
     private func showWindow() {
         guard let window = window, !windowShown else { return }
+        previousApp = NSWorkspace.shared.frontmostApplication
         windowShown = true
         let frame = savedFrame ?? NSRect(x: 100, y: 200, width: 1200, height: 800)
         window.setFrame(frame, display: true)
@@ -129,6 +133,8 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
         window.level = .normal
         window.setFrameOrigin(NSPoint(x: 0, y: 0))
         window.orderBack(nil)
+        previousApp?.activate()
+        previousApp = nil
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
