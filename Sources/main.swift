@@ -16,6 +16,10 @@ struct AppConfig {
     }
 }
 
+class NonThrottledWindow: NSWindow {
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+}
+
 class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     private let webView: WKWebView
     private let outputPath: String
@@ -51,7 +55,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     }
 
     func run() {
-        window = NSWindow(
+        window = NonThrottledWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
@@ -222,6 +226,7 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
     // MARK: - Capture loop
 
     private var captureCount = 0
+    private var warmIndex = 0
 
     private func startCaptureLoop() {
         captureTimer?.invalidate()
@@ -235,7 +240,18 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
             } else {
                 self.capture()
                 self.checkForAwaitingSession()
+                if self.captureCount % 13 == 0 && !self.windowShown {
+                    self.warmNextSession()
+                }
             }
+        }
+    }
+
+    private func warmNextSession() {
+        let js = "\(warmJS)(\(warmIndex))"
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self = self, let count = result as? Int, count > 0 else { return }
+            self.warmIndex = (self.warmIndex + 1) % count
         }
     }
 
@@ -333,6 +349,60 @@ class StatusRenderer: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDele
             const rect = overlay.getBoundingClientRect();
             return JSON.stringify({width: Math.ceil(rect.width), height: Math.ceil(rect.height), count: rowElements.length});
         })()
+    """
+
+    private let warmJS = """
+        (function(targetIndex) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let codeNode = null;
+            while (walker.nextNode()) {
+                if (walker.currentNode.textContent.trim() === 'Routines') {
+                    codeNode = walker.currentNode;
+                    break;
+                }
+            }
+            if (!codeNode) return -1;
+
+            let sidebar = codeNode.parentElement;
+            for (let i = 0; i < 10; i++) {
+                if (!sidebar.parentElement) break;
+                if (sidebar.innerText.includes('Recents')) break;
+                sidebar = sidebar.parentElement;
+            }
+
+            const lines = sidebar.innerText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+            const recentsIdx = lines.indexOf('Recents');
+            if (recentsIdx === -1) return -1;
+
+            const skip = new Set(['Recents', 'View all', 'New session', 'Routines', 'Customize', 'More']);
+            const sessionNames = [];
+            for (let i = recentsIdx + 1; i < lines.length && sessionNames.length < 6; i++) {
+                const line = lines[i];
+                if (skip.has(line) || line.length > 100 || line.length < 2 || line.startsWith('⇧')) continue;
+                if (line.includes('Try the') || line.includes('Install')) break;
+                sessionNames.push(line);
+            }
+
+            const count = sessionNames.length;
+            if (count === 0) return -1;
+            const name = sessionNames[targetIndex % count];
+
+            const tw = document.createTreeWalker(sidebar, NodeFilter.SHOW_TEXT);
+            while (tw.nextNode()) {
+                const t = tw.currentNode.textContent.trim();
+                if (t === name || (name.endsWith('…') && t.startsWith(name.replace('…', '')))) {
+                    let el = tw.currentNode.parentElement;
+                    while (el && el !== sidebar) {
+                        if (el.tagName === 'BUTTON') {
+                            el.click();
+                            return count;
+                        }
+                        el = el.parentElement;
+                    }
+                }
+            }
+            return -1;
+        })
     """
 
     private let detectJS = """
